@@ -59,76 +59,17 @@ def signed_percent(direction, amount):
     return DIRECTION[word] * float(amount)
 
 
+def signed_percent(direction, amount):
+    # Existing code stays here
+
+
 def get_report():
-    response = requests.get(
-        SOURCE_URL,
-        timeout=30,
-        headers={
-            "User-Agent": "Mozilla/5.0 "
-            "(compatible; DayTeamMarketDashboard/1.0)"
-        }
-    )
-    response.raise_for_status()
+    # NEW replacement function goes here
+    # including all the code I provided
 
-    soup = BeautifulSoup(
-        response.content, "html.parser"
-    )
 
-    heading = soup.find(
-        ["h1", "h2", "h3", "h4"],
-        string=re.compile(
-            r"Victoria Real Estate Market Report for",
-            re.IGNORECASE
-        )
-    )
-
-    if heading is None:
-        raise ValueError(
-            "Official VREB report heading not found"
-        )
-
-    period = extract(
-        r"Report for\s+(" +
-        "|".join(MONTHS) +
-        r")\s+(\d{4})",
-        heading.get_text(" ", strip=True),
-        "reporting period"
-    )
-
-    month = period.group(1).capitalize()
-    year = int(period.group(2))
-
-    # Only read text following the report heading,
-    # stopping at the next heading of equal/higher
-    # level or the 'For More Information' section.
-    parts = []
-    heading_level = int(heading.name[1])
-
-    for sibling in heading.next_siblings:
-        if getattr(sibling, "name", None) in (
-            "h1", "h2", "h3", "h4"
-        ):
-            level = int(sibling.name[1])
-            if level <= heading_level:
-                break
-
-        if hasattr(sibling, "get_text"):
-            content = sibling.get_text(" ", strip=True)
-        else:
-            content = str(sibling).strip()
-
-        if content:
-            parts.append(content)
-
-    text = " ".join(parts)
-    text = re.sub(r"\s+", " ", text)
-
-    if len(text) < 500:
-        raise ValueError(
-            "Report text appears incomplete"
-        )
-
-    return month, year, text
+def extract_sales(text):
+    # Existing code continues here
 
 
 def extract_sales(text):
