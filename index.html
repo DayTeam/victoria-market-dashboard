@@ -48,7 +48,7 @@ body {
 
 .status {
   text-align: center;
-  padding: 20px 10px 10px;
+  padding: 20px 10px;
   font-size: 15px;
   color: #666666;
 }
@@ -86,12 +86,13 @@ body {
 }
 
 .notice {
-  background: #fff8e8;
-  border-left: 5px solid #d49a22;
-  padding: 15px 18px;
+  background: #f7f7f7;
+  border-left: 5px solid #c8102e;
+  padding: 20px;
   border-radius: 5px;
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: 16px;
+  line-height: 1.7;
+  margin: 20px 0;
 }
 
 .footer {
@@ -136,51 +137,24 @@ body {
     <p>Presented by Darren Day | Day Team Realty</p>
   </div>
 
-  <div class="status">
-    Dashboard Preview — Sample Statistics
+  <div class="status" id="reporting-period">
+    Checking latest market statistics...
   </div>
 
-  <div class="grid">
-
-    <div class="stat">
-      <div class="stat-label">Properties Sold</div>
-      <div class="stat-value">573</div>
-      <div class="stat-change">Sample monthly sales figure</div>
+  <div id="market-content" aria-live="polite">
+    <div class="notice">
+      Loading market statistics...
     </div>
-
-    <div class="stat">
-      <div class="stat-label">Active MLS Listings</div>
-      <div class="stat-value">3,594</div>
-      <div class="stat-change">Sample inventory figure</div>
-    </div>
-
-    <div class="stat">
-      <div class="stat-label">Victoria Core Detached Home</div>
-      <div class="stat-value">$1.29M</div>
-      <div class="stat-change">Sample benchmark price</div>
-    </div>
-
-    <div class="stat">
-      <div class="stat-label">Victoria Core Condominium</div>
-      <div class="stat-value">$534K</div>
-      <div class="stat-change">Sample benchmark price</div>
-    </div>
-
-  </div>
-
-  <div class="notice">
-    <strong>Dashboard demonstration:</strong>
-    These figures are placeholders for testing the layout.
-    Live statistics will be displayed after the automated
-    VREB data connection is configured and verified.
   </div>
 
   <div class="footer">
-    Source:
-    <a href="https://www.vreb.org/current-statistics"
-       target="_blank" rel="noopener noreferrer">
-      Victoria Real Estate Board
-    </a>
+    <p>
+      Source:
+      <a href="https://www.vreb.org/current-statistics"
+         target="_blank" rel="noopener noreferrer">
+        Victoria Real Estate Board
+      </a>
+    </p>
 
     <p>
       Darren Day | Day Team Realty<br>
@@ -189,6 +163,151 @@ body {
   </div>
 
 </div>
+
+<script>
+const labels = [
+  ["total_sales", "Properties Sold", ""],
+  ["active_listings", "Active MLS Listings", ""],
+  ["victoria_core_detached_benchmark",
+   "Victoria Core Detached Home", "$"],
+  ["victoria_core_condo_benchmark",
+   "Victoria Core Condominium", "$"]
+];
+
+function formatNumber(value, prefix) {
+  if (typeof value !== "number" ||
+      !Number.isFinite(value)) {
+    return "—";
+  }
+
+  return prefix +
+    value.toLocaleString("en-CA", {
+      maximumFractionDigits: 0
+    });
+}
+
+function makeElement(tag, className, content) {
+  const element = document.createElement(tag);
+  element.className = className;
+  element.textContent = content;
+  return element;
+}
+
+function showNotice(message) {
+  const container =
+    document.getElementById("market-content");
+
+  container.replaceChildren(
+    makeElement("div", "notice", message)
+  );
+}
+
+async function loadMarketData() {
+  try {
+    const response = await fetch(
+      "./market-data.json?t=" + Date.now(),
+      { cache: "no-store" }
+    );
+
+    if (!response.ok) {
+      throw new Error("Data file unavailable");
+    }
+
+    const data = await response.json();
+
+    const period =
+      document.getElementById("reporting-period");
+
+    const stats = data.statistics;
+
+    const validPeriod =
+      typeof data.reporting_month === "string" &&
+      Number.isInteger(data.reporting_year);
+
+    const validStats =
+      stats &&
+      labels.every(([key]) =>
+        typeof stats[key] === "number" &&
+        Number.isFinite(stats[key]) &&
+        stats[key] >= 0
+      );
+
+    if (data.status !== "verified" ||
+        !validPeriod ||
+        !validStats) {
+      period.textContent =
+        "Market statistics awaiting verification";
+
+      showNotice(
+        "The latest Greater Victoria market " +
+        "statistics are being prepared. " +
+        "Please refer to the Victoria Real " +
+        "Estate Board for the official report."
+      );
+      return;
+    }
+
+    period.textContent =
+      data.reporting_month + " " +
+      data.reporting_year +
+      " | Latest Verified VREB Statistics";
+
+    const grid = document.createElement("div");
+    grid.className = "grid";
+
+    labels.forEach(([key, label, prefix]) => {
+      const card = document.createElement("div");
+      card.className = "stat";
+
+      card.appendChild(
+        makeElement("div", "stat-label", label)
+      );
+
+      card.appendChild(
+        makeElement(
+          "div",
+          "stat-value",
+          formatNumber(stats[key], prefix)
+        )
+      );
+
+      const changeKey = key + "_yoy_percent";
+      const change = stats[changeKey];
+
+      if (typeof change === "number" &&
+          Number.isFinite(change)) {
+        const sign = change > 0 ? "+" : "";
+
+        card.appendChild(
+          makeElement(
+            "div",
+            "stat-change",
+            sign + change.toFixed(1) +
+            "% year over year"
+          )
+        );
+      }
+
+      grid.appendChild(card);
+    });
+
+    document.getElementById("market-content")
+      .replaceChildren(grid);
+
+  } catch (error) {
+    document.getElementById("reporting-period")
+      .textContent = "Market data unavailable";
+
+    showNotice(
+      "Market statistics are temporarily " +
+      "unavailable. Please check the official " +
+      "VREB report using the link below."
+    );
+  }
+}
+
+loadMarketData();
+</script>
 
 </body>
 </html>
