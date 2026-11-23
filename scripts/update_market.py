@@ -2,7 +2,7 @@
 import json
 import re
 import sys
-from datetime import date
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -16,162 +16,316 @@ MONTHS = (
     "September October November December"
 ).split()
 
+NUMBER = r"([\d,]+)"
+PERCENT = r"(\d+(?:\.\d+)?)"
 
-def number(value):
-    return int(value.replace(",", ""))
+DIRECTION = {
+    "increased": 1,
+    "increase": 1,
+    "more": 1,
+    "higher": 1,
+    "rose": 1,
+    "decreased": -1,
+    "decrease": -1,
+    "fewer": -1,
+    "lower": -1,
+    "fell": -1,
+}
 
 
 def extract(pattern, text, label):
-    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+    match = re.search(
+        pattern,
+        text,
+        flags=re.IGNORECASE | re.DOTALL
+    )
     if not match:
-        raise ValueError(f"Cannot verify {label}")
+        raise ValueError(
+            f"Cannot reliably extract {label}"
+        )
     return match
 
 
-def main():
-    print("Checking VREB current statistics...")
+def integer(value):
+    return int(value.replace(",", ""))
 
+
+def signed_percent(direction, amount):
+    word = direction.lower()
+    if word not in DIRECTION:
+        raise ValueError(
+            f"Unknown percentage direction: {word}"
+        )
+    return DIRECTION[word] * float(amount)
+
+
+def get_report():
     response = requests.get(
         SOURCE_URL,
         timeout=30,
         headers={
-            "User-Agent": "DayTeamMarketDashboard/1.0"
-        },
+            "User-Agent": "Mozilla/5.0 "
+            "(compatible; DayTeamMarketDashboard/1.0)"
+        }
     )
     response.raise_for_status()
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(
+        response.content, "html.parser"
+    )
+
     heading = soup.find(
+        ["h1", "h2", "h3", "h4"],
         string=re.compile(
             r"Victoria Real Estate Market Report for",
-            re.IGNORECASE,
+            re.IGNORECASE
         )
     )
 
-    if not heading:
-        raise ValueError("Market report heading not found")
-
-    heading_text = heading.strip()
+    if heading is None:
+        raise ValueError(
+            "Official VREB report heading not found"
+        )
 
     period = extract(
-        r"Report for\s+(" + "|".join(MONTHS) + r")\s+(\d{4})",
-        heading_text,
-        "reporting month",
+        r"Report for\s+(" +
+        "|".join(MONTHS) +
+        r")\s+(\d{4})",
+        heading.get_text(" ", strip=True),
+        "reporting period"
     )
 
     month = period.group(1).capitalize()
     year = int(period.group(2))
 
-    current_period = year * 12 + MONTHS.index(month)
+    # Only read text following the report heading,
+    # stopping at the next heading of equal/higher
+    # level or the 'For More Information' section.
+    parts = []
+    heading_level = int(heading.name[1])
 
-    existing = json.loads(DATA_FILE.read_text(encoding="utf-8"))
+    for sibling in heading.next_siblings:
+        if getattr(sibling, "name", None) in (
+            "h1", "h2", "h3", "h4"
+        ):
+            level = int(sibling.name[1])
+            if level <= heading_level:
+                break
+
+        if hasattr(sibling, "get_text"):
+            content = sibling.get_text(" ", strip=True)
+        else:
+            content = str(sibling).strip()
+
+        if content:
+            parts.append(content)
+
+    text = " ".join(parts)
+    text = re.sub(r"\s+", " ", text)
+
+    if len(text) < 500:
+        raise ValueError(
+            "Report text appears incomplete"
+        )
+
+    return month, year, text
+
+
+def extract_sales(text):
+    match = extract(
+        r"A total of\s+" + NUMBER +
+        r"\s+properties were sold"
+        r".{0,200}?" + PERCENT +
+        r"\s+per cent\s+(fewer|more)"
+        r"\s+than",
+        text,
+        "total sales and annual change"
+    )
+
+    return (
+        integer(match.group(1)),
+        signed_percent(
+            match.group(3),
+            match.group(2)
+        )
+    )
+
+
+def extract_inventory(text):
+    match = extract(
+        r"There were\s+" + NUMBER +
+        r"\s+active listings"
+        r".{0,400}?"
+        r"(an?\s+)?(increase|decrease)"
+        r"\s+of\s+" + PERCENT +
+        r"\s+per cent\s+"
+        r"(?:from|compared to).*?"
+        r"(?:at the end of|in)\s+"
+        r"(" + "|".join(MONTHS) + r")"
+        r"\s+(\d{4})",
+        text,
+        "active listings annual change"
+    )
+
+    return (
+        integer(match.group(1)),
+        signed_percent(
+            match.group(3),
+            match.group(4)
+        ),
+        match.group(5).capitalize(),
+        int(match.group(6))
+    )
+
+
+def extract_benchmark(text, property_type):
+    if property_type == "detached":
+        anchor = (
+            r"benchmark value for a single family home"
+            r"\s+in the Victoria Core"
+        )
+    else:
+        anchor = (
+            r"benchmark value for a condominium"
+            r"\s+in the Victoria Core area"
+        )
+
+    match = extract(
+        anchor +
+        r".{0,500}?"
+        r"(increased|decreased)\s+by\s+" +
+        PERCENT +
+        r"\s+per cent\s+to\s+\$" +
+        NUMBER,
+        text,
+        property_type + " benchmark"
+    )
+
+    return (
+        integer(match.group(3)),
+        signed_percent(
+            match.group(1),
+            match.group(2)
+        )
+    )
+
+
+def validate(stats):
+    if not 100 <= stats["total_sales"] <= 3000:
+        raise ValueError("Unusual sales total")
+
+    if not 500 <= stats["active_listings"] <= 15000:
+        raise ValueError("Unusual inventory total")
+
+    for key in (
+        "victoria_core_detached_benchmark",
+        "victoria_core_condo_benchmark"
+    ):
+        if not 100000 <= stats[key] <= 5000000:
+            raise ValueError(
+                f"Unusual benchmark price: {key}"
+            )
+
+    for key, value in stats.items():
+        if key.endswith("_yoy_percent"):
+            if abs(value) > 80:
+                raise ValueError(
+                    f"Unusual annual change: {key}"
+                )
+
+
+def main():
+    print("Checking official VREB statistics...")
+
+    existing = json.loads(
+        DATA_FILE.read_text(encoding="utf-8")
+    )
+
+    month, year, report = get_report()
+
+    print(f"VREB report found: {month} {year}")
+
+    current_period = (
+        year * 12 + MONTHS.index(month)
+    )
 
     old_month = existing.get("reporting_month")
     old_year = existing.get("reporting_year")
 
-    if old_month in MONTHS and isinstance(old_year, int):
-        old_period = old_year * 12 + MONTHS.index(old_month)
+    if (
+        old_month in MONTHS
+        and type(old_year) is int
+        and existing.get("status") == "verified"
+    ):
+        old_period = (
+            old_year * 12 + MONTHS.index(old_month)
+        )
+
         if current_period <= old_period:
-            print("No newer monthly report. No changes.")
+            print(
+                "No newer monthly report. No changes."
+            )
             return
 
-    # Read only the current report section.
-    report = heading.parent
-    parts = []
+    sales, sales_change = extract_sales(report)
 
-    for element in report.next_elements:
-        if getattr(element, "name", None) == "h4":
-            break
-
-        if getattr(element, "name", None) == "p":
-            content = element.get_text(" ", strip=True)
-            if content:
-                parts.append(content)
-
-    text = " ".join(parts)
-
-    if len(text) < 500:
-        raise ValueError("Report text is incomplete")
-
-    sales = extract(
-        r"A total of\s+([\d,]+)\s+properties were sold"
-        r".{0,150}?([\d.]+)\s+per cent fewer",
-        text,
-        "monthly sales",
+    inventory, inventory_change, yoy_month, yoy_year = (
+        extract_inventory(report)
     )
 
-    inventory = extract(
-        r"There were\s+([\d,]+)\s+active listings"
-        r".{0,250}?([\d.]+)\s+per cent increase",
-        text,
-        "active listings",
+    # Confirm inventory comparison is year-over-year,
+    # rather than month-over-month.
+    if yoy_month != month or yoy_year != year - 1:
+        raise ValueError(
+            "Inventory comparison period is not "
+            "the same month in the previous year"
+        )
+
+    detached, detached_change = (
+        extract_benchmark(report, "detached")
     )
 
-    detached = extract(
-        r"benchmark value for a single family home"
-        r".{0,400}?increased by\s+([\d.]+)\s+per cent"
-        r"\s+to\s+\$([\d,]+)",
-        text,
-        "detached benchmark",
-    )
-
-    condo = extract(
-        r"benchmark value for a condominium"
-        r".{0,400}?decreased by\s+([\d.]+)\s+per cent"
-        r"\s+to\s+\$([\d,]+)",
-        text,
-        "condominium benchmark",
+    condo, condo_change = (
+        extract_benchmark(report, "condo")
     )
 
     stats = {
-        "total_sales": number(sales.group(1)),
-        "total_sales_yoy_percent": -float(sales.group(2)),
-        "active_listings": number(inventory.group(1)),
-        "active_listings_yoy_percent": float(inventory.group(2)),
+        "total_sales": sales,
+        "total_sales_yoy_percent": sales_change,
+        "active_listings": inventory,
+        "active_listings_yoy_percent":
+            inventory_change,
         "victoria_core_detached_benchmark":
-            number(detached.group(2)),
+            detached,
         "victoria_core_detached_yoy_percent":
-            float(detached.group(1)),
-        "victoria_core_condo_benchmark":
-            number(condo.group(2)),
+            detached_change,
+        "victoria_core_condo_benchmark": condo,
         "victoria_core_condo_yoy_percent":
-            -float(condo.group(1)),
+            condo_change
     }
 
-    # Conservative sanity checks.
-    if not 100 <= stats["total_sales"] <= 3000:
-        raise ValueError("Sales outside expected range")
-
-    if not 500 <= stats["active_listings"] <= 15000:
-        raise ValueError("Inventory outside expected range")
-
-    for key in (
-        "victoria_core_detached_benchmark",
-        "victoria_core_condo_benchmark",
-    ):
-        if not 100000 <= stats[key] <= 5000000:
-            raise ValueError(f"Unusual benchmark: {key}")
-
-    for key, value in stats.items():
-        if key.endswith("_yoy_percent") and abs(value) > 80:
-            raise ValueError(f"Unusual annual change: {key}")
+    validate(stats)
 
     updated = {
         "status": "verified",
         "reporting_month": month,
         "reporting_year": year,
-        "last_updated": date.today().isoformat(),
+        "last_updated": datetime.now(
+            timezone.utc
+        ).date().isoformat(),
         "source": "Victoria Real Estate Board",
         "source_url": SOURCE_URL,
-        "statistics": stats,
+        "statistics": stats
     }
 
     DATA_FILE.write_text(
         json.dumps(updated, indent=2) + "\n",
-        encoding="utf-8",
+        encoding="utf-8"
     )
 
-    print(f"Prepared {month} {year} market statistics")
+    print(
+        f"Prepared verified report: {month} {year}"
+    )
     print(json.dumps(stats, indent=2))
 
 
@@ -179,5 +333,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print(f"Update stopped safely: {error}", file=sys.stderr)
+        print(
+            f"Update stopped safely: {error}",
+            file=sys.stderr
+        )
         sys.exit(1)
