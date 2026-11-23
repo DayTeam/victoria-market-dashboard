@@ -8,155 +8,288 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
+
 SOURCE_URL = "https://www.vreb.org/current-statistics"
 DATA_FILE = Path("market-data.json")
 
-MONTHS = (
-    "January February March April May June July August "
-    "September October November December"
-).split()
+MONTHS = [
+    "January", "February", "March", "April",
+    "May", "June", "July", "August",
+    "September", "October", "November", "December"
+]
 
+MONTH_PATTERN = "(?:" + "|".join(MONTHS) + ")"
 NUMBER = r"([\d,]+)"
 PERCENT = r"(\d+(?:\.\d+)?)"
 
-DIRECTION = {
-    "increased": 1,
-    "increase": 1,
-    "more": 1,
-    "higher": 1,
-    "rose": 1,
-    "decreased": -1,
-    "decrease": -1,
-    "fewer": -1,
-    "lower": -1,
-    "fell": -1,
+EXPECTED_STAT_KEYS = {
+    "total_sales",
+    "total_sales_yoy_percent",
+    "active_listings",
+    "active_listings_yoy_percent",
+    "victoria_core_detached_benchmark",
+    "victoria_core_detached_yoy_percent",
+    "victoria_core_condo_benchmark",
+    "victoria_core_condo_yoy_percent"
 }
 
 
-def extract(pattern, text, label):
+def find(pattern, text, label):
     match = re.search(
         pattern,
         text,
         flags=re.IGNORECASE | re.DOTALL
     )
-    if not match:
+
+    if match is None:
         raise ValueError(
-            f"Cannot reliably extract {label}"
+            f"Could not reliably extract {label}"
         )
+
     return match
 
 
-def integer(value):
+def number(value):
     return int(value.replace(",", ""))
 
 
-def signed_percent(direction, amount):
-    word = direction.lower()
-    if word not in DIRECTION:
-        raise ValueError(
-            f"Unknown percentage direction: {word}"
-        )
-    return DIRECTION[word] * float(amount)
+def signed_change(direction, value):
+    direction = direction.lower()
+    amount = float(value)
+
+    if direction in (
+        "increased", "increase", "more",
+        "higher", "rose", "up"
+    ):
+        return amount
+
+    if direction in (
+        "decreased", "decrease", "fewer",
+        "lower", "fell", "down"
+    ):
+        return -amount
+
+    raise ValueError(
+        f"Unrecognized direction: {direction}"
+    )
 
 
-def signed_percent(direction, amount):
-    # Existing code stays here
+def period_number(month, year):
+    return year * 12 + MONTHS.index(month)
 
 
 def get_report():
-    # NEW replacement function goes here
-    # including all the code I provided
+    print(
+        "Checking official VREB statistics...",
+        flush=True
+    )
+
+    response = requests.get(
+        SOURCE_URL,
+        timeout=30,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 "
+                "(compatible; DayTeamMarketDashboard/1.0)"
+            )
+        }
+    )
+
+    response.raise_for_status()
+
+    soup = BeautifulSoup(
+        response.content,
+        "html.parser"
+    )
+
+    heading_pattern = re.compile(
+        r"Victoria Real Estate Market Report for\s+"
+        + MONTH_PATTERN +
+        r"\s+\d{4}",
+        re.IGNORECASE
+    )
+
+    heading = soup.find(
+        ["h1", "h2", "h3", "h4"],
+        string=heading_pattern
+    )
+
+    if heading is None:
+        raise ValueError(
+            "Official VREB report heading not found"
+        )
+
+    heading_text = heading.get_text(
+        " ", strip=True
+    )
+
+    period_match = find(
+        r"Report for\s+(" +
+        MONTH_PATTERN +
+        r")\s+(\d{4})",
+        heading_text,
+        "reporting month"
+    )
+
+    month = period_match.group(1).capitalize()
+    year = int(period_match.group(2))
+
+    print(
+        f"VREB report found: {month} {year}",
+        flush=True
+    )
+
+    # Read the report from the entire page text.
+    # This avoids problems with nested HTML elements.
+    page_text = soup.get_text(
+        " ", strip=True
+    )
+
+    page_text = re.sub(
+        r"\s+", " ", page_text
+    )
+
+    heading_match = heading_pattern.search(
+        page_text
+    )
+
+    if heading_match is None:
+        raise ValueError(
+            "Cannot locate report body"
+        )
+
+    report = page_text[heading_match.end():]
+
+    # Stop at the next report or information section.
+    stop = re.search(
+        r"Victoria Real Estate Market Report for\s+"
+        + MONTH_PATTERN +
+        r"\s+\d{4}"
+        r"|For More Information"
+        r"|Notes for Interpreting Our Statistics",
+        report,
+        flags=re.IGNORECASE
+    )
+
+    if stop:
+        report = report[:stop.start()]
+
+    if len(report) < 500:
+        raise ValueError(
+            "Report text appears incomplete"
+        )
+
+    return month, year, report
 
 
-def extract_sales(text):
-    # Existing code continues here
-
-
-def extract_sales(text):
-    match = extract(
+def get_sales(report):
+    match = find(
         r"A total of\s+" + NUMBER +
         r"\s+properties were sold"
-        r".{0,200}?" + PERCENT +
+        r".{0,250}?" + PERCENT +
         r"\s+per cent\s+(fewer|more)"
         r"\s+than",
-        text,
-        "total sales and annual change"
+        report,
+        "total sales"
     )
 
-    return (
-        integer(match.group(1)),
-        signed_percent(
-            match.group(3),
-            match.group(2)
-        )
+    sales = number(match.group(1))
+
+    change = signed_change(
+        match.group(3),
+        match.group(2)
     )
 
+    return sales, change
 
-def extract_inventory(text):
-    match = extract(
+
+def get_inventory(report, month, year):
+    match = find(
         r"There were\s+" + NUMBER +
+        r"\s+active listings for sale"
+        r".{0,700}?"
+        r"(\d+(?:\.\d+)?)\s+per cent\s+"
+        r"(increase|decrease)"
+        r"\s+from\s+the\s+" + NUMBER +
         r"\s+active listings"
-        r".{0,400}?"
-        r"(an?\s+)?(increase|decrease)"
-        r"\s+of\s+" + PERCENT +
-        r"\s+per cent\s+"
-        r"(?:from|compared to).*?"
-        r"(?:at the end of|in)\s+"
-        r"(" + "|".join(MONTHS) + r")"
-        r"\s+(\d{4})",
-        text,
-        "active listings annual change"
+        r".{0,100}?"
+        r"at the end of\s+(" +
+        MONTH_PATTERN +
+        r")\s+(\d{4})",
+        report,
+        "annual active listings comparison"
     )
 
-    return (
-        integer(match.group(1)),
-        signed_percent(
-            match.group(3),
-            match.group(4)
-        ),
-        match.group(5).capitalize(),
-        int(match.group(6))
+    inventory = number(match.group(1))
+
+    change = signed_change(
+        match.group(3),
+        match.group(2)
     )
 
+    comparison_month = (
+        match.group(5).capitalize()
+    )
+    comparison_year = int(match.group(6))
 
-def extract_benchmark(text, property_type):
+    if (
+        comparison_month != month
+        or comparison_year != year - 1
+    ):
+        raise ValueError(
+            "Inventory comparison is not year-over-year"
+        )
+
+    return inventory, change
+
+
+def get_benchmark(report, property_type):
     if property_type == "detached":
         anchor = (
             r"benchmark value for a single family home"
             r"\s+in the Victoria Core"
         )
-    else:
+    elif property_type == "condo":
         anchor = (
             r"benchmark value for a condominium"
             r"\s+in the Victoria Core area"
         )
+    else:
+        raise ValueError(
+            "Unknown property type"
+        )
 
-    match = extract(
+    match = find(
         anchor +
-        r".{0,500}?"
+        r".{0,450}?"
         r"(increased|decreased)\s+by\s+" +
         PERCENT +
         r"\s+per cent\s+to\s+\$" +
         NUMBER,
-        text,
+        report,
         property_type + " benchmark"
     )
 
-    return (
-        integer(match.group(3)),
-        signed_percent(
-            match.group(1),
-            match.group(2)
-        )
+    value = number(match.group(3))
+
+    change = signed_change(
+        match.group(1),
+        match.group(2)
     )
 
+    return value, change
 
-def validate(stats):
+
+def validate_statistics(stats):
     if not 100 <= stats["total_sales"] <= 3000:
-        raise ValueError("Unusual sales total")
+        raise ValueError(
+            "Sales figure outside expected range"
+        )
 
     if not 500 <= stats["active_listings"] <= 15000:
-        raise ValueError("Unusual inventory total")
+        raise ValueError(
+            "Inventory figure outside expected range"
+        )
 
     for key in (
         "victoria_core_detached_benchmark",
@@ -164,7 +297,7 @@ def validate(stats):
     ):
         if not 100000 <= stats[key] <= 5000000:
             raise ValueError(
-                f"Unusual benchmark price: {key}"
+                f"Benchmark outside expected range: {key}"
             )
 
     for key, value in stats.items():
@@ -175,59 +308,96 @@ def validate(stats):
                 )
 
 
+def check_existing_schema(existing):
+    if not isinstance(existing, dict):
+        raise ValueError(
+            "Existing market data is not a JSON object"
+        )
+
+    if not isinstance(
+        existing.get("statistics"), dict
+    ):
+        raise ValueError(
+            "Existing dashboard schema differs: "
+            "statistics object not found"
+        )
+
+    missing = EXPECTED_STAT_KEYS - set(
+        existing["statistics"].keys()
+    )
+
+    if missing:
+        raise ValueError(
+            "Existing dashboard uses different "
+            "statistics fields: " +
+            ", ".join(sorted(missing))
+        )
+
+    if existing.get("reporting_month") not in MONTHS:
+        raise ValueError(
+            "Existing reporting month is missing "
+            "or invalid"
+        )
+
+    if type(existing.get("reporting_year")) is not int:
+        raise ValueError(
+            "Existing reporting year is missing "
+            "or invalid"
+        )
+
+
 def main():
-    print("Checking official VREB statistics...")
+    if not DATA_FILE.exists():
+        raise ValueError(
+            "market-data.json does not exist"
+        )
 
     existing = json.loads(
-        DATA_FILE.read_text(encoding="utf-8")
+        DATA_FILE.read_text(
+            encoding="utf-8"
+        )
     )
 
     month, year, report = get_report()
 
-    print(f"VREB report found: {month} {year}")
+    check_existing_schema(existing)
 
-    current_period = (
-        year * 12 + MONTHS.index(month)
+    old_month = existing["reporting_month"]
+    old_year = existing["reporting_year"]
+
+    current_period = period_number(
+        month, year
     )
 
-    old_month = existing.get("reporting_month")
-    old_year = existing.get("reporting_year")
-
-    if (
-        old_month in MONTHS
-        and type(old_year) is int
-        and existing.get("status") == "verified"
-    ):
-        old_period = (
-            old_year * 12 + MONTHS.index(old_month)
-        )
-
-        if current_period <= old_period:
-            print(
-                "No newer monthly report. No changes."
-            )
-            return
-
-    sales, sales_change = extract_sales(report)
-
-    inventory, inventory_change, yoy_month, yoy_year = (
-        extract_inventory(report)
+    previous_period = period_number(
+        old_month, old_year
     )
 
-    # Confirm inventory comparison is year-over-year,
-    # rather than month-over-month.
-    if yoy_month != month or yoy_year != year - 1:
-        raise ValueError(
-            "Inventory comparison period is not "
-            "the same month in the previous year"
+    if current_period <= previous_period:
+        print(
+            "No newer monthly report. No changes.",
+            flush=True
         )
+        return
+
+    print(
+        "Newer report detected. "
+        "Extracting statistics...",
+        flush=True
+    )
+
+    sales, sales_change = get_sales(report)
+
+    inventory, inventory_change = (
+        get_inventory(report, month, year)
+    )
 
     detached, detached_change = (
-        extract_benchmark(report, "detached")
+        get_benchmark(report, "detached")
     )
 
     condo, condo_change = (
-        extract_benchmark(report, "condo")
+        get_benchmark(report, "condo")
     )
 
     stats = {
@@ -245,29 +415,47 @@ def main():
             condo_change
     }
 
-    validate(stats)
+    validate_statistics(stats)
 
-    updated = {
-        "status": "verified",
-        "reporting_month": month,
-        "reporting_year": year,
-        "last_updated": datetime.now(
-            timezone.utc
-        ).date().isoformat(),
-        "source": "Victoria Real Estate Board",
-        "source_url": SOURCE_URL,
-        "statistics": stats
-    }
+    # Preserve other existing dashboard fields.
+    updated = existing.copy()
 
+    updated["reporting_month"] = month
+    updated["reporting_year"] = year
+    updated["status"] = "verified"
+    updated["last_updated"] = datetime.now(
+        timezone.utc
+    ).date().isoformat()
+    updated["source"] = "Victoria Real Estate Board"
+    updated["source_url"] = SOURCE_URL
+
+    updated_statistics = existing[
+        "statistics"
+    ].copy()
+
+    updated_statistics.update(stats)
+
+    updated["statistics"] = updated_statistics
+
+    # Only write after every extraction and
+    # validation step has succeeded.
     DATA_FILE.write_text(
-        json.dumps(updated, indent=2) + "\n",
+        json.dumps(
+            updated,
+            indent=2
+        ) + "\n",
         encoding="utf-8"
     )
 
     print(
-        f"Prepared verified report: {month} {year}"
+        f"Verified statistics prepared: {month} {year}",
+        flush=True
     )
-    print(json.dumps(stats, indent=2))
+
+    print(
+        json.dumps(stats, indent=2),
+        flush=True
+    )
 
 
 if __name__ == "__main__":
@@ -276,6 +464,7 @@ if __name__ == "__main__":
     except Exception as error:
         print(
             f"Update stopped safely: {error}",
-            file=sys.stderr
+            file=sys.stderr,
+            flush=True
         )
         sys.exit(1)
