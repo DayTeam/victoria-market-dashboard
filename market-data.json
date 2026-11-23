@@ -1,0 +1,19 @@
+
+{
+  "status": "demo",
+  "reporting_month": "October",
+  "reporting_year": 2026,
+  "last_updated": null,
+  "source": "Victoria Real Estate Board",
+  "source_url": "https://www.vreb.org/current-statistics",
+  "statistics": {
+    "total_sales": null,
+    "total_sales_yoy_percent": null,
+    "active_listings": null,
+    "active_listings_yoy_percent": null,
+    "victoria_core_detached_benchmark": null,
+    "victoria_core_detached_yoy_percent": null,
+    "victoria_core_condo_benchmark": null,
+    "victoria_core_condo_yoy_percent": null
+  }
+}
