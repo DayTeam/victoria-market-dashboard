@@ -1,19 +1,19 @@
 
 {
-  "status": "demo",
+  "status": "verified",
   "reporting_month": "October",
   "reporting_year": 2026,
-  "last_updated": null,
+  "last_updated": "2026-11-02",
   "source": "Victoria Real Estate Board",
   "source_url": "https://www.vreb.org/current-statistics",
   "statistics": {
-    "total_sales": null,
-    "total_sales_yoy_percent": null,
-    "active_listings": null,
-    "active_listings_yoy_percent": null,
-    "victoria_core_detached_benchmark": null,
-    "victoria_core_detached_yoy_percent": null,
-    "victoria_core_condo_benchmark": null,
-    "victoria_core_condo_yoy_percent": null
+    "total_sales": 573,
+    "total_sales_yoy_percent": -7.1,
+    "active_listings": 3594,
+    "active_listings_yoy_percent": 5.0,
+    "victoria_core_detached_benchmark": 1288600,
+    "victoria_core_detached_yoy_percent": 0.7,
+    "victoria_core_condo_benchmark": 533900,
+    "victoria_core_condo_yoy_percent": -2.8
   }
 }
